@@ -21,8 +21,11 @@ async def create_item(data: ItemCreate, db: AsyncSession = Depends(get_db)):
     return item
 
 @app.get("/items", response_model=list[ItemResponse])
-async def get_items(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Item))
+async def get_items(search: str | None = None, db: AsyncSession = Depends(get_db)):
+    query = select(Item)
+    if search:
+        query = query.where(Item.title.ilike(f"%{search}%"))
+    result = await db.execute(query)
     return result.scalars().all()
 
 
@@ -37,3 +40,17 @@ async def get_item_by_id(item_id: int, db: AsyncSession = Depends(get_db)):
         )
         
     return item
+
+@app.delete("/items/{item_id}", status_code=204)
+async def remove_item(item_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Item).where(Item.id == item_id))
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Item not found"
+        )
+    await db.delete(item)
+    await db.commit()
+    return None
+
