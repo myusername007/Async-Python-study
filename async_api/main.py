@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from redis_client import redis_client
+import json
 from database import engine, Base, get_db
 from models import Item
 from schemas import ItemCreate, ItemResponse
@@ -18,15 +20,31 @@ async def create_item(data: ItemCreate, db: AsyncSession = Depends(get_db)):
     db.add(item)
     await db.commit()
     await db.refresh(item)
+
+    await redis_client.delete("items:all")
     return item
 
 @app.get("/items", response_model=list[ItemResponse])
 async def get_items(search: str | None = None, db: AsyncSession = Depends(get_db)):
+    cached = await redis_client.get("items:all")
+    if cached:
+        print(">>> cache HIT")
+        return json.loads(cached)
+    
+    print(">>> cache MISS")
+
     query = select(Item)
     if search:
         query = query.where(Item.title.ilike(f"%{search}%"))
     result = await db.execute(query)
-    return result.scalars().all()
+    items = result.scalars().all()
+
+
+
+    items_data = [ItemResponse.model_validate(i).model_dump() for i in items]
+    await redis_client.set("items:all", json.dumps(items_data), ex=30)
+
+    return items
 
 
 @app.get("/items/{item_id}", response_model=ItemResponse)
