@@ -1,11 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from redis_client import redis_client
-import json
 from database import engine, Base, get_db
 from models import Item
 from schemas import ItemCreate, ItemResponse
+from cache import get_cached, set_cached, invalidate
 
 app = FastAPI()
 
@@ -21,17 +20,17 @@ async def create_item(data: ItemCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(item)
 
-    await redis_client.delete("items:all")
+    await invalidate("items:all")
     return item
 
 @app.get("/items", response_model=list[ItemResponse])
 async def get_items(search: str | None = None, db: AsyncSession = Depends(get_db)):
-    cached = await redis_client.get("items:all")
+    cached = await get_cached("items:all")
     if cached:
         print(">>> cache HIT")
-        return json.loads(cached)
+        return cached
     
-    print(">>> cache MISS")
+    print(">>> cache MIS")
 
     query = select(Item)
     if search:
@@ -42,13 +41,20 @@ async def get_items(search: str | None = None, db: AsyncSession = Depends(get_db
 
 
     items_data = [ItemResponse.model_validate(i).model_dump() for i in items]
-    await redis_client.set("items:all", json.dumps(items_data), ex=30)
+    await set_cached("items:all", items_data, 30)
 
     return items
 
 
 @app.get("/items/{item_id}", response_model=ItemResponse)
 async def get_item_by_id(item_id: int, db: AsyncSession = Depends(get_db)):
+    cached = await get_cached(f"items:{item_id}")
+    if cached:
+        print(">>> cache HIT")
+        return cached
+    
+    print(">>> cache MIS")
+
     result = await db.execute(select(Item).where(Item.id == item_id))
     item = result.scalar_one_or_none()
     if item is None:
@@ -57,6 +63,9 @@ async def get_item_by_id(item_id: int, db: AsyncSession = Depends(get_db)):
             detail="Item not found"
         )
         
+    item_data = ItemResponse.model_validate(item).model_dump()
+    await set_cached(f"items:{item_id}", item_data, 300)
+
     return item
 
 @app.delete("/items/{item_id}", status_code=204)
@@ -70,5 +79,5 @@ async def remove_item(item_id: int, db: AsyncSession = Depends(get_db)):
         )
     await db.delete(item)
     await db.commit()
+    await invalidate(f"items:{item_id}")
     return None
-
