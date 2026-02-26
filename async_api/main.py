@@ -1,10 +1,12 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from redis_client import redis_client
 from sqlalchemy import select
 from database import engine, Base, get_db
 from models import Item
 from schemas import ItemCreate, ItemResponse
 from cache import get_cached, set_cached, invalidate
+from rate_limits import rate_limit
 
 app = FastAPI()
 
@@ -13,7 +15,7 @@ async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-@app.post("/items", response_model=ItemResponse, status_code=201)
+@app.post("/items", response_model=ItemResponse, status_code=201, dependencies=[Depends(rate_limit)])
 async def create_item(data: ItemCreate, db: AsyncSession = Depends(get_db)):
     item = Item(**data.model_dump())
     db.add(item)
@@ -81,3 +83,13 @@ async def remove_item(item_id: int, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await invalidate(f"items:{item_id}")
     return None
+
+
+@app.get("/health")
+async def health():
+    try:
+        await redis_client.ping()
+        redis_status = "ok"
+    except Exception:
+        redis_status = "unavailable"
+    return {"status": "ok", "redis": redis_status}
